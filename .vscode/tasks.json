@@ -1,0 +1,45 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ESP32: Build",
+            "type": "process",
+            "command": "E:\\Software\\ESP32\\penv\\Scripts\\pio.exe",
+            "args": ["run"],
+            "options": { "cwd": "${workspaceFolder}", "env": { "PLATFORMIO_CORE_DIR": "E:\\Software\\ESP32" } },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP32: List Ports",
+            "type": "process",
+            "command": "E:\\Software\\ESP32\\penv\\Scripts\\pio.exe",
+            "args": ["device", "list"],
+            "options": { "cwd": "${workspaceFolder}", "env": { "PLATFORMIO_CORE_DIR": "E:\\Software\\ESP32" } },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP32: Upload",
+            "type": "process",
+            "command": "E:\\Software\\ESP32\\penv\\Scripts\\pio.exe",
+            "args": ["run", "--target", "upload", "--upload-port", "${input:esp32Port}"],
+            "options": { "cwd": "${workspaceFolder}", "env": { "PLATFORMIO_CORE_DIR": "E:\\Software\\ESP32" } },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP32: Serial Monitor",
+            "type": "process",
+            "command": "E:\\Software\\ESP32\\penv\\Scripts\\pio.exe",
+            "args": ["device", "monitor", "--port", "${input:esp32Port}", "--baud", "115200"],
+            "options": { "cwd": "${workspaceFolder}", "env": { "PLATFORMIO_CORE_DIR": "E:\\Software\\ESP32" } },
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "esp32Port",
+            "type": "promptString",
+            "description": "Enter the ESP32 CH340 COM port shown by ESP32: List Ports (for example COM7)."
+        }
+    ]
+}

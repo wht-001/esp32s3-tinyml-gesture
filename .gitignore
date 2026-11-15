@@ -1,0 +1,8 @@
+.pio/
+compile_commands.json
+
+# Local Wi-Fi credentials; commit secrets.example.h instead.
+/include/secrets.h
+
+# Local upstream checkout; the README links to the original repository.
+/XIAO-ESP32S3-Sense/
