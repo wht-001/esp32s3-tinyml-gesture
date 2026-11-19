@@ -4,6 +4,12 @@
 
 采样与推理由独立 FreeRTOS 任务执行，主循环负责结果消费、MQTT 通信与 ArduinoOTA 服务。Wi-Fi 连接后启用 modem sleep。模型推理不依赖云端服务。
 
+## 演示
+
+33 秒演示：静止（idle）→ 挥手（wave）→ 持续抖动（shake）触发异常告警，网页看板实时同步。
+
+https://github.com/user-attachments/assets/abf948d3-2e76-491e-b87c-b3c3001d1234
+
 ## 功能
 
 | 模块 | 功能 |
