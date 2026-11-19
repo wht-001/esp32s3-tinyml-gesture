@@ -6,3 +6,7 @@ compile_commands.json
 
 # Local upstream checkout; the README links to the original repository.
 /XIAO-ESP32S3-Sense/
+
+# Local development drafts and historical notes.
+/备份/
+/doc/2026-11-12-day4-wifi-mqtt.md

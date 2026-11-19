@@ -1,73 +1,73 @@
-# ESP32-S3 TinyML 手势识别与 MQTT 网页看板
+# ESP32-S3 TinyML 手势识别与 MQTT 看板
 
-基于 **ESP32-S3、MPU6050 和 Edge Impulse** 的手势识别原型项目，已跑通从传感器采集、设备端模型推理，到 Wi-Fi / MQTT 上报和网页实时展示的完整链路。
+基于 ESP32-S3、MPU6050 与 Edge Impulse 的设备端手势识别工程。固件采集三轴加速度，在本地识别 `idle`（静止）、`wave`（挥动）和 `shake`（抖动），通过 MQTT 发布分类结果与持续抖动告警，并由浏览器看板展示。
 
-当前支持识别 `idle`（静止）、`wave`（挥动）和 `shake`（抖动）三种状态。模型在 ESP32-S3 本地运行，联网用于传输识别结果；网页通过 MQTT over WebSocket 订阅消息并显示结果。
+采样与推理由独立 FreeRTOS 任务执行，主循环负责结果消费、MQTT 通信与 ArduinoOTA 服务。Wi-Fi 连接后启用 modem sleep。模型推理不依赖云端服务。
 
-本项目是在开源示例和教程基础上进行硬件适配、功能整合与验证的学习实践，参考来源见文末“参考与致谢”。目前重点是验证端到端流程，持续采样、网络可靠性和完整训练资料仍有待完善。
+## 功能
 
-## 已实现功能
-
-| 环节 | 当前实现 |
+| 模块 | 功能 |
 | --- | --- |
-| 传感器采集 | 通过 I²C 读取 MPU6050 三轴加速度，并换算为 m/s² |
-| 设备端推理 | 调用 Edge Impulse 导出的模型库，输出三类状态及其置信度 |
-| 本地反馈 | 串口打印识别结果、DSP 与推理耗时；板载 RGB 灯随类别变色 |
-| 联网上报 | 经 2.4 GHz Wi-Fi 连接 MQTT Broker，发布 JSON 格式的推理结果 |
-| 网页看板 | 显示当前类别、三类置信度、原始 JSON 和最近 30 条记录 |
-| 看板辅助功能 | 提供本地模拟按钮、消息复制、记录清空及超过约 6 秒无新消息的提示 |
+| 数据采集 | MPU6050 三轴加速度采样、校准偏移应用及 m/s² 单位换算 |
+| 本地推理 | Edge Impulse 频谱特征提取与三分类推理 |
+| 任务通信 | 传感器任务经长度为 4 的 FreeRTOS 队列向主循环传递结果 |
+| 状态反馈 | 串口输出分类结果与耗时，WS2812 显示类别灯色 |
+| MQTT | 发布分类结果及连续抖动告警，定时尝试恢复 MQTT 连接 |
+| OTA | 通过 ArduinoOTA 在局域网内上传固件 |
+| 低功耗配置 | Wi-Fi 连接后调用 `WiFi.setSleep(true)` 开启 modem sleep |
+| 网页看板 | 显示分类、置信度、告警、原始消息及最近 30 条分类记录 |
 
 ## 系统结构
 
 ```mermaid
 flowchart LR
-    A[MPU6050 三轴加速度] -->|I²C| B[ESP32-S3 采样与单位换算]
-    B --> C[Edge Impulse 本地推理]
-    C --> D[串口输出与 RGB 灯反馈]
-    C -->|Wi-Fi / MQTT TCP 1883| E[MQTT Broker]
-    E -->|MQTT over WSS 8884| F[浏览器网页看板]
+    A[MPU6050] -->|I2C| B[传感器任务：采样与推理]
+    B --> C[RGB 状态灯]
+    B -->|结果队列| D[主循环：MQTT 与告警处理]
+    D -->|MQTT TCP 1883| E[MQTT Broker]
+    E -->|MQTT over WSS 8884| F[网页看板]
+    G[PlatformIO OTA 客户端] -->|局域网| H[主循环：ArduinoOTA]
 ```
 
-设备与网页通过 **同一个 Broker、同一个 Topic** 对接，不要求处于同一局域网。网页展示的是设备已经计算好的识别结果。
+设备与看板通过相同 Broker 和 Topic 通信，可位于不同局域网。OTA 上传要求电脑与设备在可相互访问的局域网中。
 
 ## 硬件与接线
 
-当前固件按 ESP32-S3 开发板配置，`platformio.ini` 使用 `esp32-s3-devkitc-1` 板型，并针对 **N16R8（16 MB Flash / 8 MB OPI PSRAM）** 覆盖了存储参数。烧录前应核对实际模块型号；其他 ESP32-S3 板卡需要相应调整配置、引脚和 RGB 灯驱动。
-
-所需硬件：ESP32-S3 开发板、MPU6050 模块、USB 数据线和连接导线；联网上报还需要可用的 2.4 GHz Wi-Fi。
+当前配置对应 ESP32-S3-WROOM-1 **N16R8** 模块：16 MB Flash、8 MB OPI PSRAM。PlatformIO 板型为 `esp32-s3-devkitc-1`，存储参数由 `platformio.ini` 覆盖。其他板卡须按实际硬件核对存储类型、引脚与 RGB 灯支持。
 
 | MPU6050 | ESP32-S3 | 说明 |
 | --- | --- | --- |
-| VCC | 3.3V | 按所用模块供电要求连接，并保持 I²C 电平兼容 |
+| VCC | 3.3V | 按模块规格供电，保持 I2C 电平兼容 |
 | GND | GND | 共地 |
-| SDA | GPIO8 | 对应 `MPU6050_SDA` |
-| SCL | GPIO9 | 对应 `MPU6050_SCL` |
+| SDA | GPIO8 | I2C 数据线 |
+| SCL | GPIO9 | I2C 时钟线 |
 
-程序使用 MPU6050 默认地址 `0x68`。板载 WS2812 RGB 灯配置为 GPIO48，识别状态与灯色对应如下：
+MPU6050 使用默认 I2C 地址 `0x68`，总线频率为 400 kHz。RGB 灯为 GPIO48 上的 WS2812。
 
-| 类别 | 含义 | RGB 灯色 |
+| 类别 | 含义 | 灯色 |
 | --- | --- | --- |
 | `idle` | 静止 | 绿色 |
 | `wave` | 挥动 | 蓝色 |
 | `shake` | 抖动 | 红色 |
 
-固件中的加速度计和陀螺仪偏移量来自当前传感器的校准结果。更换模块后应重新校准，参考 [校准程序](<备份/calibration 备份.ino>)，并更新 `src/main.ino` 中的 `ACCEL_*_OFFSET` / `GYRO_*_OFFSET`。
+`src/main.ino` 中的 `ACCEL_*_OFFSET` 与 `GYRO_*_OFFSET` 对应当前模块的校准结果。更换传感器后需重新校准；校准方法可参考 [MPU6050 上游示例](https://github.com/Mjrovai/XIAO-ESP32S3-Sense/tree/main/IMU/mcu6050-calibration)。
 
-## 软件环境
+## 环境依赖
 
-- 开发工具：[Cursor](https://cursor.com/) + [PlatformIO](https://platformio.org/)，日常编译、烧录和串口监视均在 Cursor 中完成。
-- 开发框架：Arduino；PlatformIO 平台固定为 `espressif32 @ 8.0.0`。
-- 本地库：`I2Cdev`、`MPU6050`、`ESP32-S3-TinyML_inferencing`，已放在 `lib/`。
-- MQTT 库：`knolleary/PubSubClient@^2.8`，由 PlatformIO 按配置安装。
-- 网页依赖：通过 jsDelivr CDN 加载 MQTT.js，无需 npm 构建或单独的应用后端。
+- 开发环境：[Cursor](https://cursor.com/) 与 [PlatformIO](https://platformio.org/)。
+- PlatformIO 平台：`espressif32 @ 8.0.0`；开发框架：Arduino。
+- 本地依赖：`lib/I2Cdev/`、`lib/MPU6050/` 和 `lib/ESP32-S3-TinyML_inferencing/`。
+- MQTT 客户端：`knolleary/PubSubClient@^2.8`，由 PlatformIO 安装。
+- Wi-Fi 与 OTA：Arduino-ESP32 提供的 `WiFi`、`ArduinoOTA`。
+- 网页：现代浏览器，通过 jsDelivr CDN 加载 MQTT.js，无需 npm 构建或应用后端。
 
-Cursor 使用项目内 `.vscode/tasks.json` 定义的任务调用 PlatformIO。当前 `.vscode/` 配置包含原开发电脑的 PlatformIO 绝对路径，换电脑时需要调整，也可以使用下方的命令行方式。
+Cursor 任务定义位于 `.vscode/tasks.json`。任务及 `.vscode/settings.json` 当前使用本机 PlatformIO 安装路径，其他电脑需调整对应路径，或直接使用 PlatformIO 命令行。
 
-## 快速开始
+## 配置
 
-### 1. 配置设备
+### Wi-Fi 凭据
 
-在 Cursor 文件面板中，将 [include/secrets.example.h](include/secrets.example.h) 复制为同目录下的 `secrets.h`，然后在 `include/secrets.h` 中填写自己的 Wi-Fi 名称和密码：
+将 [include/secrets.example.h](include/secrets.example.h) 复制为 `include/secrets.h`，填写可用的 **2.4 GHz Wi-Fi**：
 
 ```cpp
 #pragma once
@@ -76,112 +76,107 @@ Cursor 使用项目内 `.vscode/tasks.json` 定义的任务调用 PlatformIO。�
 #define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
 ```
 
-`src/main.ino` 通过 `#include "secrets.h"` 读取配置，PlatformIO 会自动搜索项目的 `include/` 目录，无需修改编译参数。换电脑或首次克隆仓库后，需要先创建这份本地配置，再编译。
+PlatformIO 自动搜索 `include/`。真实凭据仅保存在 Git 忽略的 `secrets.h` 中，示例文件仅保存占位符。首次克隆后必须创建本地配置才能编译。手动分享目录或固件时，仍需排除真实凭据及包含凭据的构建产物。
 
-| 文件 | 用途 | 是否提交 Git |
-| --- | --- | --- |
-| `include/secrets.h` | 本机真实 Wi-Fi 名称和密码 | 否，已在 `.gitignore` 中排除 |
-| `include/secrets.example.h` | 不含真实凭据的配置模板 | 是 |
+### MQTT
 
-更换 Wi-Fi 时，只需修改本机 `include/secrets.h`，再正常编译烧录。不要把真实信息填入示例文件，也不要使用 `git add -f` 强行添加本地配置。`.gitignore` 只影响 Git 文件跟踪；手动上传文件、打包分享时仍需排除 `secrets.h` 和含凭据的固件产物。
+以下参数位于 `src/main.ino`：
 
-MQTT 参数仍在 `src/main.ino` 中设置：
+| 参数 | 默认值 |
+| --- | --- |
+| Broker | `broker.hivemq.com` |
+| 设备端口 | `1883` |
+| 分类主题 | `esp32s3-tinyml/aio/gesture` |
+| 告警主题 | `esp32s3-tinyml/aio/alert` |
 
-```cpp
-const char *mqtt_server = "broker.hivemq.com";
-const uint16_t mqtt_port = 1883;
-const char *mqtt_topic = "esp32s3-tinyml/YOUR_DEVICE/gesture";
-```
+设备与看板的分类主题须一致。看板的告警主题由 `index.html` 中的 `ALERT_TOPIC` 单独配置，修改设备告警主题时须同步修改该常量。公共 Broker 中建议使用设备专属的主题前缀。
 
-ESP32-S3 使用 **2.4 GHz Wi-Fi**。当前源码和网页的默认 Topic 均为 `esp32s3-tinyml/aio/gesture`；建议换成自己的唯一主题，并同步修改网页中的 Topic，以免与其他测试设备串流。
+## 编译与部署
 
-### 2. 编译、烧录与查看串口
+### Cursor 任务
 
-在 Cursor 中打开项目根目录，通过 `Ctrl+Shift+P` → `Tasks: Run Task`（任务：运行任务）选择：
+在 Cursor 打开项目根目录，通过 `Ctrl+Shift+P` → `Tasks: Run Task` 运行以下任务：
 
-- `ESP32: Build`：编译固件；也可以按 `Ctrl+Shift+B` 运行默认编译任务。
-- `ESP32: List Ports`：查看当前串口。
-- `ESP32: Upload`：选择烧录任务，按提示输入实际串口，例如 `COM7`。
-- `ESP32: Serial Monitor`：按提示输入串口，以 115200 波特率查看输出。
+| 任务 | 用途 |
+| --- | --- |
+| `ESP32: Build` | 编译默认环境，也可使用 `Ctrl+Shift+B` |
+| `ESP32: List Ports` | 列出可用串口 |
+| `ESP32: Upload` | 通过串口编译并烧录，按提示输入串口 |
+| `ESP32: Upload (WiFi OTA)` | 通过 Wi-Fi 上传，按提示输入设备 IP |
+| `ESP32: Serial Monitor` | 以 115200 波特率打开串口监视器 |
 
-也可以在 Cursor 的集成终端中运行以下等效命令：
+### USB 烧录
+
+在项目根目录执行，`COM7` 为串口示例：
 
 ```bash
-# 编译固件
 pio run -e esp32s3
-
-# 查看可用串口
 pio device list
-
-# 烧录；COM7 仅为示例，请替换为实际串口
 pio run -e esp32s3 -t upload --upload-port COM7
-
-# 打开串口监视器
 pio device monitor -p COM7 -b 115200
 ```
 
-为避开 Windows 链接器的中文路径问题，当前 `build_dir` 设为 `../.pio-build/onboard-led-blink`。这是历史沿用的输出目录名，构建产物会生成在项目目录的上一级。
+默认构建环境为 `esp32s3`。构建目录设为 `../.pio-build/onboard-led-blink`，使用项目目录外的 ASCII 路径以兼容 Windows 链接器。
 
-启动后，程序先检测 MPU6050，再尝试连接 Wi-Fi。Wi-Fi 启动连接最多等待约 20 秒，失败后仍进入本地识别流程；MQTT 未连接时跳过本次上报。
+### Wi-Fi OTA
 
-### 3. 打开网页看板
+首次部署需通过 USB 烧录当前固件。设备连接 Wi-Fi 后初始化 ArduinoOTA，串口输出设备 IP。后续通过 Cursor 的 Wi-Fi OTA 任务输入该 IP，或使用命令行：
 
-使用浏览器打开根目录的 [index.html](index.html)，填写连接参数后点击“连接”：
+```bash
+# 将示例 IP 替换为设备当前的局域网 IP
+pio run -e esp32s3_ota -t upload --upload-port 192.168.1.100
+```
 
-| 配置项 | 默认值 |
-| --- | --- |
-| 协议 | `wss` |
-| Broker | `broker.hivemq.com` |
-| 端口 | `8884` |
-| Topic | `esp32s3-tinyml/aio/gesture`，需与设备一致 |
+`esp32s3_ota` 继承 USB 环境的编译配置，上传协议为 `espota`。目标 IP 在上传时指定。当前 OTA 未设置认证，仅应在受信任的局域网内使用；OTA 期间采样与推理的实时性不作保证。
 
-网页实际连接地址为 `wss://broker.hivemq.com:8884/mqtt`。设备使用的 `1883` 是原生 MQTT TCP 端口，网页使用的 `8884` 是 WebSocket TLS 端口，两者连接同一个 Broker，端口不需要填成一样。
+### 网页看板
 
-也可以在项目根目录启动静态文件服务后访问网页，例如在已安装 Python 的电脑上执行：
+使用浏览器打开 [index.html](index.html)，或在项目根目录启动本地静态服务：
 
 ```bash
 python -m http.server 8000 --bind 127.0.0.1
 ```
 
-然后打开 `http://127.0.0.1:8000/`。这里的 `8000` 是本地网页服务端口，与 MQTT Broker 端口无关。
+访问 `http://127.0.0.1:8000/`。看板默认连接 `wss://broker.hivemq.com:8884/mqtt`，点击“连接”后同时订阅分类与告警主题。设备使用原生 MQTT TCP 端口 1883；浏览器使用 WebSocket TLS 端口 8884。
 
-暂时没有连接硬件时，可点击看板中的 `idle` / `wave` / `shake` 模拟按钮预览展示效果。模拟数据只在当前页面内生成，不会发布到 MQTT，也不能用于证明设备链路正常。连接 Broker 需要可用网络；若 MQTT.js 的 CDN 无法访问，也会影响网页连接功能。
+模拟按钮仅在当前页面生成分类消息，不向 MQTT 发布。清除告警条只隐藏网页提示，不重置设备端告警状态。页面刷新后，记录与告警计数清空。
 
-### 4. 验证端到端流程
-
-1. 串口确认 MPU6050、Wi-Fi 和 MQTT 的连接状态。
-2. 保持传感器静止一个完整采样窗口，观察 `idle`、绿色灯和网页记录。
-3. 连续挥动或抖动传感器，观察 `wave` / `shake`、对应灯色和置信度变化。
-4. 对照串口“已上报”的 JSON 与网页原始消息，确认接收的是设备实际输出。
-
-如网页没有收到数据，先检查设备是否确实上报、两端 Topic 是否一致，再检查浏览器到 Broker 的 WebSocket 连接、代理及防火墙设置。看板断流提示只说明一段时间没有新消息，不能单独判断设备是否断电。
-
-## 采样与模型
-
-以下参数来自当前固件及导出模型的元数据：
+## 采样与推理
 
 | 参数 | 当前值 |
 | --- | --- |
-| 输入通道 | `ax`、`ay`、`az` 三轴加速度 |
-| 输入单位 | m/s² |
-| 加速度计量程 | ±4g，换算灵敏度为 8192 LSB/g |
-| 目标采样率 | 50 Hz，主循环按 20 ms 间隔读取 |
-| 单窗口输入 | 99 个采样点 × 3 轴 = 297 个数值 |
-| 窗口时长 | 约 2 秒 |
-| DSP | Spectral Analysis（频谱特征提取） |
-| 模型 | Edge Impulse 导出的编译模型，INT8 输入 / 输出 |
+| 输入轴及单位 | `ax`、`ay`、`az`，m/s² |
+| 加速度量程 | ±4g，8192 LSB/g |
+| 目标采样周期 | 20 ms（50 Hz） |
+| 模型输入窗口 | 99 个采样点 × 3 轴，共 297 个数值 |
+| 名义窗口时长 | 约 2 秒 |
+| DSP | Spectral Analysis |
+| 模型输入 / 输出 | INT8 |
 | 模型类别顺序 | `idle`、`shake`、`wave` |
-| 输出策略 | 每个窗口取置信度最高的类别 |
+| 输出策略 | 选择置信度最高的类别 |
 
-固件当前使用顺序采样、攒满窗口后推理的方式，更新间隔还会受推理和网络调用耗时影响。当前没有对低置信度结果设置“未知手势”分支，因此三类之外的动作也可能被归入其中一类。
+传感器任务使用 `vTaskDelayUntil()` 调度采样，栈空间为 16384 字节，优先级为 2，固定在核心 1。每个输入窗口完成后同步推理、更新 RGB 灯并将结果入队。推理耗时可能导致采样周期超限，当前实现不提供严格的实时采样保证。
 
-替换模型时，需要同步核对采样率、输入轴、单位、窗口大小、标签顺序，以及 `run_inference()` 中 JSON 字段与类别的映射。
+主循环处理 MQTT、OTA 与队列结果。队列容量为 4，入队等待时间为 0；队列满时丢弃新结果。网络等待不直接阻塞传感器任务，但可能导致结果丢弃或告警处理延后。
 
-目录保留了 [采集程序备份](备份/采集数据备份.ino) 和 `model/` 下的模型导出压缩包。采集备份采用早期的采样间隔公式，重新采集训练数据前应与模型要求的 20 ms 间隔对齐。当前仓库尚未提供原始训练数据、完整训练记录或标准测试集评估报告。
+替换模型时须同步核对采样率、输入单位、窗口尺寸、标签顺序，以及 `classify_and_send()` 中结果字段与类别的映射。当前未提供原始训练数据、完整训练配置或独立测试集评估报告。
 
-## MQTT 消息格式
+## 告警规则
 
-默认发布主题：`esp32s3-tinyml/aio/gesture`。
+主循环根据接收的分类结果进行持续抖动判断：
+
+- 当前标签为 `shake`，且 `p_shake >= 0.80` 时，连续计数递增。
+- 连续 3 个达标结果触发一次告警，名义持续时间约为 6 秒。
+- 同一连续事件仅触发一次；出现未达标结果后，计数及锁存状态重置。
+- MQTT 不可用时告警不缓存，重新连接后不补发本次事件。
+
+规则由 `ALERT_SHAKE_MIN_CONF` 和 `ALERT_CONSECUTIVE` 定义。队列积压与结果丢弃可能影响实际触发时刻。
+
+## MQTT 消息
+
+### 分类结果
+
+主题：`esp32s3-tinyml/aio/gesture`。
 
 ```json
 {
@@ -193,67 +188,72 @@ python -m http.server 8000 --bind 127.0.0.1
 }
 ```
 
-| 字段 | 含义 |
-| --- | --- |
-| `label` | 当前置信度最高的类别 |
-| `confidence` | 该类别的置信度，范围 0～1 |
-| `idle` / `shake` / `wave` | 各类别的置信度，按两位小数上报 |
+`confidence` 为选中类别的置信度，三个类别字段均为 0～1 的数值，按两位小数发送。
 
-当前消息不包含设备时间戳或设备标识；看板记录的时间为**浏览器接收时间**。发布使用 QoS 0、非保留消息，设备离线或发布失败时没有消息缓存与补发。
+### 持续抖动告警
+
+主题：`esp32s3-tinyml/aio/alert`。
+
+```json
+{
+  "type": "alert",
+  "event": "shake",
+  "confidence": 0.95,
+  "count": 3
+}
+```
+
+`count` 为触发时连续达标的结果数。当前发布使用 QoS 0、非保留消息，无离线缓存或补发。消息不包含设备时间戳；看板显示浏览器接收时间。
+
+## 运行与部署限制
+
+- Wi-Fi 启动连接超时约为 20 秒。未连接时仍启动本地识别，但不启用 OTA；当前未实现显式的 Wi-Fi 重连状态机或恢复后重新初始化 OTA 的流程。
+- MQTT 按约 5 秒间隔尝试重连；连接调用本身为同步操作。
+- modem sleep 在 Wi-Fi 连接后启用；当前不包含电流或能耗测量结果，也不启用 deep sleep 或 CPU 降频。
+- 公共 Broker 无鉴权，设备端 MQTT 为明文通信。正式部署需评估私有 Broker、身份认证、TLS 与 OTA 认证。
+- 看板保留当前页面内最近 30 条分类记录，无数据库；超过约 6 秒无分类消息时提示断流，连接关闭后需手动重连。
+- 模型仅输出已有三类之一，未设置低置信度拒识或未知类别分支。
 
 ## 目录结构
 
 ```text
 .
-├── README.md                         # 项目介绍与运行说明
-├── platformio.ini                    # 固件构建配置与依赖
+├── .vscode/                          # Cursor 编译、烧录与串口任务
 ├── include/
-│   ├── secrets.example.h             # 可提交的 Wi-Fi 配置模板
-│   └── secrets.h                     # 本机 Wi-Fi 凭据，Git 忽略，需自行创建
+│   ├── secrets.example.h             # 可公开的 Wi-Fi 配置模板
+│   └── secrets.h                     # 本机配置，由 Git 忽略
 ├── src/
-│   └── main.ino                      # 采样、推理、灯光反馈与 MQTT 上报
+│   └── main.ino                      # 采样、推理、MQTT、告警及 OTA
 ├── lib/
-│   ├── I2Cdev/                       # I²C 设备访问库
-│   ├── MPU6050/                      # MPU6050 驱动
-│   └── ESP32-S3-TinyML_inferencing/   # Edge Impulse 模型与推理 SDK
-├── index.html                        # MQTT 网页看板
+│   ├── I2Cdev/                       # I2C 驱动依赖
+│   ├── MPU6050/                      # 传感器驱动
+│   └── ESP32-S3-TinyML_inferencing/   # 模型与推理 SDK
 ├── model/                            # 模型导出压缩包
-├── doc/                              # 学习与联网验证记录
-├── 备份/                             # 采集、校准程序及 esp-dsp 备份
-└── XIAO-ESP32S3-Sense/                # 本机上游参考仓库，Git 忽略，不随本项目上传
+├── index.html                        # 网页看板
+├── platformio.ini                    # PlatformIO 环境配置
+└── README.md
 ```
 
-PlatformIO 的固件入口是 `src/main.ino`。`备份/` 和本机 `XIAO-ESP32S3-Sense/` 中的其他示例不参与当前主程序构建。后者是独立的上游参考仓库，已加入 `.gitignore`，需要查阅时可通过“参考与致谢”中的链接单独获取。联网实践记录见 [Wi-Fi + MQTT 学习记录](doc/2026-11-12-day4-wifi-mqtt.md)，其中部分 `tutorial/` 路径属于早期工作区，当前目录未包含这些文件。
-
-## 当前限制与后续方向
-
-- **采样时序**：采样、推理和 MQTT 维护共用主循环。MQTT 每约 5 秒尝试重连，但 `mqtt.connect()` 本身仍是同步调用，网络异常可能延迟采样；后续可通过独立任务或缓冲机制改善。
-- **断线恢复**：启动时有 Wi-Fi 连接超时处理；尚未实现完整的 Wi-Fi 重连状态机、离线缓存与补发。网页关闭了自动重连，连接断开后需手动连接。
-- **模型评估**：目前以三类动作的链路验证为主，尚缺少跨用户、不同安装方向及复杂动作的系统评估。
-- **部署条件**：当前使用无鉴权的公共测试 Broker，设备端为明文 MQTT；适合学习演示。后续可配置自建 Broker、身份认证和设备端 TLS。
-- **数据保存**：看板仅保留当前页面内最近 30 条消息，刷新后清空，尚无数据库或历史查询服务。
-- **训练复现**：后续补充数据集说明、采集规范、训练配置及评估结果。
+本机上游参考仓库 `XIAO-ESP32S3-Sense/` 不参与构建，并由 Git 忽略。参考项目通过下方链接访问。
 
 ## 参考与致谢
 
-本项目的实现参考了已有开源项目与工具，当前整合工作包括：将采集与推理流程适配到本项目的 ESP32-S3 接线和构建配置，接入 MQTT 结果上报，并配套网页看板完成链路验证。
-
-| 来源 | 本项目中的用途或参考范围 |
+| 项目 | 参考范围 |
 | --- | --- |
-| [Mjrovai / XIAO-ESP32S3-Sense](https://github.com/Mjrovai/XIAO-ESP32S3-Sense) | 核心 TinyML 流程参考：MPU6050 数据采集、校准、模型训练与部署推理；本地保留相关资料与示例 |
-| [Nilina2002 / Smart-Helmet-using-ESP32](https://github.com/Nilina2002/Smart-Helmet-using-ESP32) | 联网部分参考：Wi-Fi / MQTT 结果上报与网页看板思路；在本项目中与手势识别流程整合 |
-| [Jeff Rowberg / i2cdevlib](https://github.com/jrowberg/i2cdevlib) | 本地 `I2Cdev` 与 `MPU6050` 驱动；采集和校准示例亦保留了原作者声明 |
-| [Edge Impulse](https://www.edgeimpulse.com/) | 模型导出、DSP 与设备端推理工具链 |
-| [PubSubClient](https://github.com/knolleary/pubsubclient) | Arduino MQTT 客户端 |
-| [MQTT.js](https://github.com/mqttjs/MQTT.js) | 网页 MQTT over WebSocket 客户端 |
+| [Mjrovai / XIAO-ESP32S3-Sense](https://github.com/Mjrovai/XIAO-ESP32S3-Sense) | MPU6050 数据采集、校准、模型训练与部署推理 |
+| [Nilina2002 / Smart-Helmet-using-ESP32](https://github.com/Nilina2002/Smart-Helmet-using-ESP32) | Wi-Fi、MQTT 上报与网页看板 |
+| [Jeff Rowberg / i2cdevlib](https://github.com/jrowberg/i2cdevlib) | I2Cdev 与 MPU6050 驱动 |
+| [Edge Impulse](https://www.edgeimpulse.com/) | 模型导出、DSP 与本地推理工具链 |
+| [PubSubClient](https://github.com/knolleary/pubsubclient) | 设备端 MQTT 客户端 |
+| [MQTT.js](https://github.com/mqttjs/MQTT.js) | 浏览器 MQTT over WebSocket 客户端 |
 
-## 许可证与发布说明
+## 许可证与分发
 
-当前根目录尚未为本项目新增部分指定统一许可证。第三方代码、示例、模型和资料保留各自的版权与许可要求；“参考与致谢”不能替代许可证要求的声明。
+本项目原创代码与文档采用 [MIT 许可证](LICENSE)，版权署名为 `wht-001`。该许可仅覆盖本项目的原创贡献，不改变复制、修改或依赖的第三方内容的原有授权。第三方代码、模型与资料适用各自的版权及许可要求，参考来源说明不能替代许可证声明。
 
-- XIAO-ESP32S3-Sense 上游附有 [Apache-2.0 许可证](https://github.com/Mjrovai/XIAO-ESP32S3-Sense/blob/main/LICENSE)，具体文件如有单独声明，应同时遵守。
-- 本地 `I2Cdev` / `MPU6050` 源文件头包含 MIT 许可声明，应随相关代码保留。
-- Edge Impulse SDK 的许可说明见 [SDK LICENSE](lib/ESP32-S3-TinyML_inferencing/src/edge-impulse-sdk/LICENSE)，其中也列出了第三方组件的不同许可证。
-- **模型导出包需单独核对授权**：当前 [model_metadata.h](lib/ESP32-S3-TinyML_inferencing/src/model-parameters/model_metadata.h) 等生成文件的文件头声明适用 Edge Impulse 服务条款，并包含“requires an active paid Edge Impulse subscription”的要求。公开分发 `lib/ESP32-S3-TinyML_inferencing/` 和 `model/` 中的导出包前，应结合实际账户、导出方式及对应条款确认使用与分发权限，不能仅以 SDK 的通用许可证认定整个导出包的授权。
+- XIAO-ESP32S3-Sense 上游采用 [Apache-2.0](https://github.com/Mjrovai/XIAO-ESP32S3-Sense/blob/main/LICENSE)，具体文件的独立声明同时适用。
+- I2Cdev 与 MPU6050 源文件包含 MIT 许可声明。
+- Edge Impulse SDK 的许可及第三方组件说明见 [SDK LICENSE](lib/ESP32-S3-TinyML_inferencing/src/edge-impulse-sdk/LICENSE)。
+- 模型生成文件另有 Edge Impulse 服务条款声明。[model_metadata.h](lib/ESP32-S3-TinyML_inferencing/src/model-parameters/model_metadata.h) 等文件头包含“requires an active paid Edge Impulse subscription”的要求；公开分发模型库和导出包前须核对适用的账户、导出及分发条款。
 
-真实 Wi-Fi 凭据仅保存在 Git 忽略的 `include/secrets.h` 中。如果凭据曾经提交或推送过，仅添加忽略规则不能删除历史记录，应先更换密码并处理已跟踪文件及历史记录。发布项目时，还应确认第三方代码和模型满足各自的许可要求；从 Smart Helmet 等上游复制或修改的代码应保留适用的版权及许可声明。
+凭据若曾进入提交历史，仅添加忽略规则不能删除历史内容，应更换已公开的凭据并处理历史记录。

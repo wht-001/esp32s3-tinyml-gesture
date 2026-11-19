@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32-S3 手势看板 · Day 6</title>
+<title>ESP32-S3 手势识别与告警看板</title>
 <style>
   :root {
     --bg: #f1f5f9;
@@ -717,8 +717,8 @@
       </svg>
     </div>
     <div>
-      <h1>ESP32-S3 手势看板 <span class="day-tag">Day 6</span></h1>
-      <p class="sub">订阅 Day 5 主题 <code>esp32s3-tinyml/aio/gesture</code>，实时显示板子的推理结果（每 2 秒一条）。</p>
+      <h1>ESP32-S3 手势看板 <span class="day-tag">MQTT</span></h1>
+      <p class="sub">订阅分类主题 <code>esp32s3-tinyml/aio/gesture</code> 显示推理结果，另订阅告警主题 <code>esp32s3-tinyml/aio/alert</code>，持续抖动约 6 秒时顶部出现红色告警条。</p>
     </div>
   </div>
 
@@ -729,14 +729,22 @@
 </header>
 
 <main>
+  <!-- 持续抖动告警，收到告警主题消息后显示。 -->
+  <section id="alertBanner" class="card" style="display:none;border-color:var(--red-bd);background:var(--red-bg)">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><strong style="color:#b91c1c">⚠ 异常报警：持续抖动</strong><br><span id="alertText" style="font-size:13px;color:var(--ink-2)"></span></div>
+      <div style="display:flex;gap:8px;align-items:center"><span id="alertCount" class="count-chip num">告警 0 次</span><button id="alertDismissBtn" class="ghost sm" type="button">清除</button></div>
+    </div>
+  </section>
+
   <!-- MQTT 连接配置 -->
   <section class="card">
     <div class="conn-grid">
       <div>
         <label for="proto">协议</label>
         <select id="proto">
-          <option value="wss" selected>wss（8884，先关梯子）</option>
-          <option value="ws">ws（8000，aio 实测连不上）</option>
+          <option value="wss" selected>wss（TLS，8884）</option>
+          <option value="ws">ws（8000）</option>
         </select>
       </div>
       <div>
@@ -756,10 +764,11 @@
         <button id="disconnectBtn" class="ghost" disabled>断开</button>
       </div>
     </div>
+    <p style="margin:10px 2px 0;font-size:13px;color:#5b6b7f">告警主题：<code>esp32s3-tinyml/aio/alert</code>。连接成功后自动订阅，需与设备端配置一致。</p>
 
     <div class="callout">
       <span>💡</span>
-      <span>先关梯子再连接：aio 这台电脑实测，8000 一直连不上，挂着梯子时 8884 也会被拦。页面已默认 <code>wss/8884</code>，关好梯子直接点“连接”。看板连不上不影响板子推理——板子照常跑，只是网页收不到。</span>
+      <span>默认使用 <code>wss/8884</code> 连接 Broker。连接失败时可检查协议、端口、代理和防火墙设置。网页连接状态不影响设备端本地推理。</span>
     </div>
   </section>
 
@@ -863,13 +872,14 @@
   </div>
 
   <div class="footer-note">
-    <strong>Day 6 过关标准：</strong>打开本页点连接，挥手时大字标签和三条置信度条跟着变，记录表持续新增行；停手 2 秒后变回 <code>idle</code>。板子断电或断网时页面会提示“超过 6 秒没新消息”，这不算故障。
+    <strong>状态说明：</strong>设备端连续 3 个窗口的抖动置信度达到阈值时发布告警，名义持续时间约 6 秒。告警条可手动清除；设备端需经过未达标窗口才会重新触发。同一页面超过约 6 秒无分类消息时显示断流提示。
   </div>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/mqtt/dist/mqtt.min.js"></script>
 <script>
   const $ = id => document.getElementById(id);
+  const ALERT_TOPIC = 'esp32s3-tinyml/aio/alert'; // 独立的持续抖动告警主题
   const COLORS = { idle: '#10b981', wave: '#2563eb', shake: '#dc2626' };
   const CN_NAMES = { idle: '静止状态', wave: '检测到挥动', shake: '检测到抖动' };
   const ICONS = {
@@ -878,7 +888,7 @@
     shake: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
   };
 
-  let client = null, count = 0, lastAt = 0;
+  let client = null, count = 0, lastAt = 0, alertCount = 0;
   const currentNums = { conf: 0, idle: 0, wave: 0, shake: 0 };
   const rafHandles = {};
 
@@ -926,11 +936,12 @@
     $('connectBtn').disabled = true;
     client = mqtt.connect(url, { clientId: 'aio-dashboard-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 0 });
     client.on('connect', () => {
-      setStatus(`已连接，订阅 ${topic}`, 'on');
+      setStatus(`已连接，订阅 ${topic} + ${ALERT_TOPIC}`, 'on');
       $('disconnectBtn').disabled = false;
       client.subscribe(topic, err => { if (err) setStatus('订阅失败: ' + err.message, 'err'); });
+      client.subscribe(ALERT_TOPIC, err => { if (err) setStatus('告警订阅失败: ' + err.message, 'err'); });
     });
-    client.on('message', (t, payload) => onMessage(payload.toString()));
+    client.on('message', (t, payload) => onMessage(t, payload.toString()));
     client.on('error', e => setStatus('连接错误: ' + e.message, 'err'));
     client.on('close', () => {
       if ($('connectBtn').disabled) {
@@ -949,7 +960,20 @@
     setStatus('未连接');
   }
 
-  function onMessage(text) {
+  // 告警主题消息单独显示，不加入分类记录表。
+  function onAlert(text) {
+    let d;
+    try { d = JSON.parse(text); } catch (e) { return; }
+    if (d.type !== 'alert') return;
+    alertCount++;
+    $('alertCount').textContent = '告警 ' + alertCount + ' 次';
+    $('alertText').textContent = `最近一次 ${new Date().toLocaleTimeString()} · ${d.event} 置信度 ${(Number(d.confidence) || 0).toFixed(2)} · 连续 ${d.count} 个窗口达标`;
+    $('alertBanner').style.display = 'block';
+  }
+
+  function onMessage(topic, text) {
+    if (text === undefined) { text = topic; topic = ''; } // 模拟按钮只传 JSON 文本
+    if (topic === ALERT_TOPIC) { onAlert(text); return; }
     let d;
     try { d = JSON.parse(text); } catch (e) { $('raw').textContent = '非 JSON 消息: ' + text; return; }
     if (typeof d.label !== 'string') { $('raw').textContent = 'JSON 里没有 label: ' + text; return; }
@@ -1014,7 +1038,7 @@
     while (tb.children.length > 30) tb.lastChild.remove();
   }
 
-  // 超过 6 秒（3 个周期）没新消息 → 在“上次收到”后面标 stale，方便区分断流和 idle
+  // 超过约 6 秒未收到分类消息时标记数据过期。
   setInterval(() => {
     if (!lastAt) return;
     const secs = Math.round((Date.now() - lastAt) / 1000);
@@ -1053,6 +1077,7 @@
     } catch (_) {}
   });
 
+  $('alertDismissBtn').addEventListener('click', () => { $('alertBanner').style.display = 'none'; });
   $('connectBtn').addEventListener('click', connect);
   $('disconnectBtn').addEventListener('click', disconnect);
   $('clearBtn').addEventListener('click', () => {
